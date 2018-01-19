@@ -26,7 +26,9 @@ class CentralizedOracle {
     this.oracle = this.rawLog['_oracle'];
     this.eventAddress = this.rawLog['_eventAddress'];
     this.numOfResults = this.rawLog['_numOfResults'].toNumber();
+    this.bettingStartBlock = this.rawLog['_bettingStartBlock'].toNumber();
     this.bettingEndBlock = this.rawLog['_bettingEndBlock'].toNumber();
+    this.resultSettingStartBlock = this.rawLog['_resultSettingStartBlock'].toNumber();
     this.resultSettingEndBlock = this.rawLog['_resultSettingEndBlock'].toNumber();
     this.consensusThreshold = this.rawLog['_consensusThreshold'].toJSON();
   }
@@ -46,7 +48,9 @@ class CentralizedOracle {
       amounts: _.fill(Array(this.numOfResults), '0'),
       resultIdx: null,
       blockNum: this.blockNum,
+      startBlock: this.bettingStartBlock,
       endBlock: this.bettingEndBlock,
+      resultSetStartBlock: this.resultSettingStartBlock,
       resultSetEndBlock: this.resultSettingEndBlock,
       consensusThreshold: this.consensusThreshold
     }

@@ -24,8 +24,6 @@ class Topic {
     this.topicAddress = this.rawLog['_topicAddress'];
     this.creator = this.rawLog['_creator'];
     this.oracle = this.rawLog['_oracle'];
-    this.bettingEndBlock = this.rawLog['_bettingEndBlock'].toNumber();
-    this.resultSettingEndBlock = this.rawLog['_resultSettingEndBlock'].toNumber();
   }
 
   translate() {
