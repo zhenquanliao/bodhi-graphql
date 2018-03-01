@@ -1,157 +1,214 @@
 const _ = require('lodash');
-const { Qweb3 } = require('qweb3');
-const fetch = require('node-fetch');
 
-const config = require('../config/config');
 const logger = require('../utils/logger');
+const blockchain = require('../api/blockchain');
+const bodhiToken = require('../api/bodhi_token');
+const centralizedOracle = require('../api/centralized_oracle');
+const decentralizedOracle = require('../api/decentralized_oracle');
+const DBHelper = require('../db/nedb').DBHelper;
 
-const qclient = new Qweb3(config.QTUM_RPC_ADDRESS);
-
-async function checkTxStatus(txid) {
-  const resp = await qclient.getTransactionReceipt(txid);
-  console.log(resp);
-  if (_.isEmpty(resp)) {
-    return {
-      status: 'PENDING',
-    };
-  }
-
-  const tx = resp[0];
-  if (_.isEmpty(tx.log)) {
-    return {
-      status: 'FAIL',
-      gasUsed: tx.gasUsed,
-      blockNum: tx.blockNum,
-    };
-  }
-
-  return {
-    status: 'SUCCESS',
-    gasUsed: tx.gasUsed,
-    blockNum: tx.blockNum,
-  };
-}
-
-async function updateTxDB(db) {
+async function updatePendingTxs(db) {
   let pendingTxs;
   try {
     pendingTxs = await db.Transactions.cfind({ status: 'PENDING' })
-      .sort({ createTime: -1 }).exec();
+      .sort({ createdTime: -1 }).exec();
   } catch (err) {
-    logger.error(`Error updateTxDB: ${err.message}`);
+    logger.error(`Error: get pending Transactions: ${err.message}`);
     throw err;
   }
 
   // TODO(frank): batch to void too many rpc calls
-  await Promise.all(pendingTxs.map(async (txid) => {
-    await updateTx(txid, db);
-  }));
+  const updatePromises = [];
+  _.each(pendingTxs, (tx) => {
+    updatePromises.push(new Promise(async (resolve) => {
+      await updateTx(tx);
+      await updateDB(tx, db);
+      resolve();
+    }));
+  })
+  await Promise.all(updatePromises);
 }
 
-async function updateTx(approveTxid, db) {
-  const txReceipt = await checkTxStatus(approveTxid);
-  let tx;
-  if (txReceipt.status !== 'PENDING') {
+// Update the Transaction info
+async function updateTx(tx) {
+  const resp = await blockchain.getTransactionReceipt({ transactionId: tx._id });
+
+  if (_.isEmpty(resp)) {
+    tx.status = 'PENDING';
+  } else if (_.isEmpty(resp[0].log)) {
+    tx.status = 'FAIL';
+    tx.gasUsed = resp[0].gasUsed;
+    tx.blockNum = resp[0].blockNumber;
+  } else {
+    tx.status = 'SUCCESS';
+    tx.gasUsed = resp[0].gasUsed;
+    tx.blockNum = resp[0].blockNumber;
+  }
+}
+
+// Update the DB with new Transaction info
+async function updateDB(tx, db) {
+  if (tx.status !== 'PENDING') {
     try {
-      tx = await db.Transactions.update(
-        { address: approveTxid },
+      logger.debug(`Update: Transaction ${tx.type} txid:${tx._id}`);
+      const updateRes = await db.Transactions.update(
+        { _id: tx._id },
         {
           $set: {
-            status: txReceipt.status,
-            gasUsed: txReceipt.gasUsed,
-            blockNum: txReceipt.blockNum,
+            status: tx.status,
+            gasUsed: tx.gasUsed,
+            blockNum: tx.blockNum,
           },
-        }, {},
+        }, 
+        {
+          returnUpdatedDocs: true,
+        },
       );
+      const updatedTx = updateRes[1];
+
+      // Execute follow up tx
+      if (updatedTx && updatedTx.status === 'SUCCESS') {
+        await executeFollowUpTx(updatedTx, db);
+      }
     } catch (err) {
-      logger.error(`Error updateApproveTx ${approveTxid}: ${err.message}`);
+      logger.error(`Error: Update Transaction ${tx.type} txid:${tx._id}: ${err.message}`);
       throw err;
     }
   }
-
-  if (txReceipt.status === 'SUCCESS' && tx.type.startsWith('APPROVE')) {
-    updateApprovedTx(tx, db);
-  }
 }
 
-async function updateApprovedTx(approveTx, db) {
+// Execute follow-up transaction
+async function executeFollowUpTx(tx, db) {
   const Transactions = db.Transactions;
-  if (approveTx.type === 'APPROVESETRESULT') {
-    let setResultTxid;
-    try {
-      const resp = await fetch('http://localhost:5555/set-result', {
-        method: 'POST',
-        body: JSON.stringify({
-          contractAddress: approveTx.entityId,
-          resultIndex: approveTx.optionIdx,
-          senderAddress: approveTx.senderAddress,
-        }),
-        headers: { 'Content-Type': 'application/json' },
-      }).then(res => res.json());
-      setResultTxid = resp.result.txid;
-    } catch (err) {
-      logger.error(`Error call /set-result: ${err.message}`);
-      throw err;
+  let txid;
+  switch (tx.type) {
+    // Approve was reset to 0. Sending approve for consensusThreshold.
+    case 'RESETAPPROVESETRESULT': {
+      try {
+        const approveTx = await bodhiToken.approve({
+          spender: tx.topicAddress,
+          value: tx.amount,
+          senderAddress: tx.senderAddress,
+        });
+        txid = approveTx.txid;
+      } catch (err) {
+        logger.error(`Error calling BodhiToken.approve: ${err.message}`);
+        throw err;
+      }
+
+      await DBHelper.insertTransaction(Transactions, {
+        _id: txid,
+        txid,
+        version: tx.version,
+        type: 'APPROVESETRESULT',
+        status: 'PENDING',
+        senderAddress: tx.senderAddress,
+        topicAddress: tx.topicAddress,
+        oracleAddress: tx.oracleAddress,
+        optionIdx: tx.optionIdx,
+        token: 'BOT',
+        amount: tx.amount,
+        createdTime: Date.now().toString(),
+      });
+      break;
     }
 
-    const tx = {
-      _id: setResultTxid,
-      version: approveTx.version,
-      type: 'SETRESULT',
-      txStatus: 'PENDING',
-      senderAddress: approveTx.senderAddress,
-      entityId: approveTx.entityId,
-      optionIdx: approveTx.optionIdx,
-      token: 'BOT',
-      amount: approveTx.amount,
-      createdTime: Date.now().toString(),
-    };
+    // Approve was accepted. Sending setResult.
+    case 'APPROVESETRESULT': {
+      try {
+        const setResultTx = await centralizedOracle.setResult({
+          contractAddress: tx.oracleAddress,
+          resultIndex: tx.optionIdx,
+          senderAddress: tx.senderAddress,
+        });
+        txid = setResultTx.txid;
+      } catch (err) {
+        logger.error(`Error calling CentralizedOracle.setResult: ${err.message}`);
+        throw err;
+      }
 
-    try {
-      await Transactions.insert(tx);
-    } catch (err) {
-      logger.error(`Error insert Transactions: ${err.message}`);
-      throw err;
-    }
-  } else if (approveTx.type === 'APPROVEVOTE') {
-    let voteTxid;
-    try {
-      const resp = await fetch('http://localhost:5555/vote', {
-        method: 'POST',
-        body: JSON.stringify({
-          contractAddress: approveTx.entityId,
-          resultIndex: approveTx.optionIdx,
-          botAmount: approveTx.amount,
-          senderAddress: approveTx.senderAddress,
-        }),
-        headers: { 'Content-Type': 'application/json' },
-      }).then(res => res.json());
-      voteTxid = resp.result.txid;
-    } catch (err) {
-      logger.error(`Error call /vote: ${err.message}`);
-      throw err;
+      await DBHelper.insertTransaction(Transactions, {
+        _id: txid,
+        txid,
+        version: tx.version,
+        type: 'SETRESULT',
+        status: 'PENDING',
+        senderAddress: tx.senderAddress,
+        oracleAddress: tx.oracleAddress,
+        optionIdx: tx.optionIdx,
+        token: 'BOT',
+        amount: tx.amount,
+        createdTime: Date.now().toString(),
+      });
+      break;
     }
 
-    const tx = {
-      _id: voteTxid,
-      version: approveTx.version,
-      type: 'VOTE',
-      txStatus: 'PENDING',
-      senderAddress: approveTx.senderAddress,
-      entityId: approveTx.entityId,
-      optionIdx: approveTx.optionIdx,
-      token: 'BOT',
-      amount: approveTx.approveTx.amount,
-      createdTime: Date.now().toString(),
-    };
+    // Approve was reset to 0. Sending approve for vote amount.
+    case 'RESETAPPROVEVOTE': {
+      try {
+        const approveTx = await bodhiToken.approve({
+          spender: tx.topicAddress,
+          value: tx.amount,
+          senderAddress: tx.senderAddress,
+        });
+        txid = approveTx.txid;
+      } catch (err) {
+        logger.error(`Error calling BodhiToken.approve: ${err.message}`);
+        throw err;
+      }
 
-    try {
-      await Transactions.insert(tx);
-    } catch (err) {
-      logger.error(`Error insert Transactions: ${err.message}`);
-      throw err;
+      await DBHelper.insertTransaction(Transactions, {
+        _id: txid,
+        txid,
+        version: tx.version,
+        type: 'APPROVEVOTE',
+        status: 'PENDING',
+        senderAddress: tx.senderAddress,
+        topicAddress: tx.topicAddress,
+        oracleAddress: tx.oracleAddress,
+        optionIdx: tx.optionIdx,
+        token: 'BOT',
+        amount,
+        createdTime: Date.now().toString(),
+      });
+      break;
+    }
+
+    // Approve was accepted. Sending vote.
+    case 'APPROVEVOTE': {
+      try {
+        const voteTx = await decentralizedOracle.vote({
+          contractAddress: tx.oracleAddress,
+          resultIndex: tx.optionIdx,
+          botAmount: tx.amount,
+          senderAddress: tx.senderAddress,
+        });
+        txid = voteTx.txid;
+      } catch (err) {
+        logger.error(`Error calling DecentralizedOracle.vote: ${err.message}`);
+        throw err;
+      }
+
+      await DBHelper.insertTransaction(Transactions, {
+        _id: txid,
+        txid,
+        version: tx.version,
+        type: 'VOTE',
+        status: 'PENDING',
+        senderAddress: tx.senderAddress,
+        oracleAddress: tx.oracleAddress,
+        optionIdx: tx.optionIdx,
+        token: 'BOT',
+        amount: tx.amount,
+        createdTime: Date.now().toString(),
+      });
+      break;
+    }
+
+    default: {
+      break;
     }
   }
 }
 
-module.exports = updateTxDB;
+module.exports = updatePendingTxs;

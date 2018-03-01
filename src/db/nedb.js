@@ -2,6 +2,7 @@ const path = require('path');
 const datastore = require('nedb-promise');
 
 const Utils = require('../utils/utils');
+const logger = require('../utils/logger');
 
 const basePath = `${Utils.getDataDir()}/nedb`;
 const topics = datastore({ filename: `${basePath}/topics.db`, autoload: true });
@@ -12,7 +13,7 @@ const transactions = datastore({ filename: `${basePath}/transactions.db`, autolo
 
 const dbPromises = [topics, oracles, votes, blocks, transactions];
 
-module.exports = async () => {
+async function connectDB() {
   try {
     await Promise.all(dbPromises);
   } catch (err) {
@@ -27,4 +28,41 @@ module.exports = async () => {
     Blocks: blocks,
     Transactions: transactions,
   };
+}
+
+class DBHelper {
+  static async insertTopic(db, topic) {
+    try {
+      logger.debug(`Insert: Topic txid:${topic.txid}`);
+      await db.insert(topic);
+    } catch (err) {
+      logger.error(`Error inserting Topic ${topic.txid}: ${err.message}`);
+      throw err;
+    }
+  }
+
+  static async insertOracle(db, oracle) {
+    try {
+      logger.debug(`Insert: Oracle txid:${oracle.txid}`);
+      await db.insert(oracle);
+    } catch (err) {
+      logger.error(`Error inserting Oracle ${oracle.txid}: ${err.message}`);
+      throw err;
+    }
+  }
+
+  static async insertTransaction(db, tx) {
+    try {
+      logger.debug(`Insert: Transaction ${tx.type} txid:${tx.txid}`);
+      await db.insert(tx);
+    } catch (err) {
+      logger.error(`Error inserting Transaction ${tx.type} ${tx.txid}: ${err.message}`);
+      throw err;
+    }
+  }
+}
+
+module.exports = {
+  connectDB,
+  DBHelper
 };

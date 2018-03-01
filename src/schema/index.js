@@ -5,76 +5,84 @@ const resolvers = require('./resolvers');
 const typeDefs = `
 
 type Topic {
-  version: Int!
-  address: String!
   txid: String!
+  version: Int!
+  blockNum: Int
   status: _OracleStatusType!
+  address: String
   name: String!
   options: [String!]!
   resultIdx: Int
   qtumAmount: [String!]!
   botAmount: [String!]!
-  blockNum: Int!
-  oracles: [Oracle]!
+  oracles: [Oracle]
 }
 
 type Oracle {
-  version: Int!
-  address: String!
   txid: String!
-  topicAddress: String!
+  version: Int!
+  blockNum: Int
+  status: _OracleStatusType!
+  address: String
+  topicAddress: String
   resultSetterAddress: String
   resultSetterQAddress: String
-  status: _OracleStatusType!
   token: String!
   name: String!
   options: [String!]!
   optionIdxs: [Int!]!
   amounts: [String!]!
   resultIdx: Int
-  blockNum: Int!
-  startTime: String!
-  endTime: String!
-  resultSetStartTime: String
-  resultSetEndTime: String
+  startTime: Int!
+  endTime: Int!
+  resultSetStartTime: Int
+  resultSetEndTime: Int
   consensusThreshold: String
 }
 
 type Vote {
-  version: Int!
   txid: String!
+  version: Int!
+  blockNum: Int!
   voterAddress: String!
   voterQAddress: String!
   oracleAddress: String!
   optionIdx: Int!
   amount: String!
-  blockNum: Int!
 }
 
 type Transaction {
   version: Int!
   txid: String
+  blockNum: Int
+  gasUsed: Int
+  createdTime: Int!
   type: _TransactionType!
   status: _TransactionStatus!
   senderAddress: String!
   senderQAddress: String!
-  entityId: String
+  topicAddress: String
+  oracleAddress: String
+  name: String
+  options: [String!]
+  resultSetterAddress: String
+  bettingStartTime: Int
+  bettingEndTime: Int
+  resultSettingStartTime: Int
+  resultSettingEndTime: Int
   optionIdx: Int
   token: _TokenType
   amount: String
-  gasUsed: Int
-  blockNum: Int
-  createdTime: String!
 }
 
 type Block {
   blockNum: Int!
-  blockTime: String!
+  blockTime: Int!
 }
 
 type syncInfo {
   syncBlockNum: Int
-  syncBlockTime: String
+  syncBlockTime: Int
   chainBlockNum: Int
 }
 
@@ -125,14 +133,6 @@ type Mutation {
     resultSettingEndTime: Int!
   ): Transaction
 
-  setResult(
-    version: Int!
-    senderAddress: String!
-    oracleAddress: String!
-    consensusThreshold: String!
-    resultIdx: Int!
-  ): Transaction
-
   createBet(
     version: Int!
     senderAddress: String!
@@ -141,9 +141,19 @@ type Mutation {
     amount: String!
   ): Transaction
 
+  setResult(
+    version: Int!
+    senderAddress: String!
+    topicAddress: String!
+    oracleAddress: String!
+    amount: String!
+    optionIdx: Int!
+  ): Transaction
+
   createVote(
     version: Int!
     senderAddress: String!
+    topicAddress: String!
     oracleAddress: String!
     optionIdx: Int!
     amount: String!
@@ -152,10 +162,10 @@ type Mutation {
   finalizeResult(
     version: Int!
     senderAddress: String!
-    oracleAddrss: String!
+    oracleAddress: String!
   ): Transaction
 
-  withDraw(
+  withdraw(
     version: Int!
     senderAddress: String!
     topicAddress: String!
@@ -208,11 +218,13 @@ enum _OrderDirection {
 enum _TransactionType {
   CREATEEVENT
   BET
+  RESETAPPROVESETRESULT
   APPROVESETRESULT
   SETRESULT
+  RESETAPPROVEVOTE
   APPROVEVOTE
   VOTE
-  FINALIZEEVENT
+  FINALIZERESULT
   WITHDRAW
 }
 

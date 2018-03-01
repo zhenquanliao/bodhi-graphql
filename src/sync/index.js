@@ -7,7 +7,7 @@ const logger = require('../utils/logger');
 const fetch = require('node-fetch');
 
 const config = require('../config/config');
-const connectDB = require('../db/nedb');
+const connectDB = require('../db/nedb').connectDB;
 const updateTxDB = require('./update_tx');
 
 const qclient = new Qweb3(config.QTUM_RPC_ADDRESS);
@@ -173,7 +173,13 @@ async function sync(db) {
         if (_.isNil(chainBlockNum)) {
           logger.warn('chainBlockNum should not be null');
         } else if (startBlock >= chainBlockNum) {
-          pubsub.publish('OnSyncInfo', { OnSyncInfo: { syncBlockNum: currentBlockChainHeight, syncBlockTime: currentBlockTime, chainBlockNum } });
+          pubsub.publish('OnSyncInfo', { 
+            OnSyncInfo: {
+              syncBlockNum: currentBlockChainHeight,
+              syncBlockTime: currentBlockTime,
+              chainBlockNum 
+            } 
+          });
         }
         // nedb doesnt require close db, leave the comment as a reminder
         // await db.Connection.close();
